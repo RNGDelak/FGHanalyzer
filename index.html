@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <script>
+      // numberToCanonicalFGH: stack-safe, memoized, f0-run **uncompressed**
+function numberToCanonicalFGH(nInput, baseInput, options = {}) {
+  const n = BigInt(nInput);
+  const base = BigInt(baseInput);
+  if (n < base) throw new Error("n must be >= base");
+
+  const MAX_K = options.maxK ?? 12;               // limit search depth for k
+  const MAX_EXPR_STRING = options.maxExprString ?? 20000; // truncate safety
+
+  // Safety cap for explicit f0 expansions to avoid runaway memory use.
+  // If you want truly unbounded expansion, set this to a larger value or remove the check.
+  const MAX_F0_EXPAND = options.maxF0Expand ?? 1_000_000; // max number of explicit f0 wrappers allowed
+
+  // Memoization for f_k(x) results: key = `${k},${x}`
+  // value = { value: BigInt, exceeded: false } OR { exceeded: true }
+  const fkMemo = new Map();
+
+  // compute f_k(x) but stop early if > limit.
+  // This is memoized and uses short-circuits for k=0,1,2.
+  function compute_fk_lte_limit(k, x, limit) {
+    // normalize
+    k = Number(k);
+    x = BigInt(x);
+    limit = BigInt(limit);
+
+    const key = `${k},${x}`;
+    if (fkMemo.has(key)) return fkMemo.get(key);
+
+    // helper to store and return
+    function store(res) {
+      fkMemo.set(key, res);
+      return res;
+    }
+
+    // k = 0: f0(x) = x + 1
+    if (k === 0) {
+      const v = x + 1n;
+      return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
+    }
+
+    // k = 1: f1(x) = 2x
+    if (k === 1) {
+      const v = x << 1n;
+      return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
+    }
+
+    // k = 2: f2(x) = x * 2^x  (fast via bit shift if x small enough)
+    if (k === 2) {
+      // guard: if x is too large, 2^x is impossible to hold
+      if (x > 4096n) return store({ exceeded: true });
+      const pow = 1n << x; // 2^x
+      const v = x * pow;
+      return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
+    }
+
+    // k >= 3: hyper-exponential growth. guard with small x threshold.
+    // If x is large, treat as exceeded immediately.
+    if (x > 32n) return store({ exceeded: true });
+
+    // Otherwise compute iteratively: apply f_{k-1} starting from value = x, x times.
+    let v = x;
+    for (let i = 0; i < Number(x); i++) {
+      const lower = compute_fk_lte_limit(k - 1, v, limit);
+      if (lower.exceeded) return store({ exceeded: true });
+      v = lower.value;
+      if (v > limit) return store({ exceeded: true });
+    }
+    return store({ value: v, exceeded: false });
+  }
+
+  // ---------- Expression representation ----------
+  // We use two node types now:
+  // { type: 'base', v: BigInt, hash: 'B...' }
+  // { type: 'f', k: Number, inner: expr, hash: 'Fk,innerhash' }
+  //
+  // Hash is used for memoization of evals.
+
+  // Evaluate symbolic expression to a numeric value <= limit (or report exceeded) - ITERATIVE
+  // Returns { value: BigInt, exceeded: false } or { exceeded: true }
+  const evalMemo = new Map(); // key -> result
+
+  function evalExprLimited(expr, limit) {
+    const limitBig = BigInt(limit);
+
+    // Memo key
+    if (expr.hash && evalMemo.has(expr.hash + '|' + limitBig.toString())) {
+      return evalMemo.get(expr.hash + '|' + limitBig.toString());
+    }
+
+    // Flatten: collect frames from outermost to base
+    const frames = []; // will hold {type:'f', k}
+    let cur = expr;
+    while (cur.type !== "base") {
+      if (cur.type === "f") {
+        frames.push({ type: "f", k: cur.k });
+        cur = cur.inner;
+      } else {
+        throw new Error("Unknown expr node type: " + JSON.stringify(cur));
+      }
+    }
+
+    // cur is base now
+    let value = cur.v;
+
+    // Apply frames from inner-to-outer (reverse of collected order)
+    for (let i = frames.length - 1; i >= 0; i--) {
+      const fr = frames[i];
+      // for any k (including k=0), use compute_fk_lte_limit
+      const r = compute_fk_lte_limit(fr.k, value, limitBig);
+      if (r.exceeded) {
+        const res = { exceeded: true };
+        if (expr.hash) evalMemo.set(expr.hash + '|' + limitBig.toString(), res);
+        return res;
+      }
+      value = r.value;
+    }
+
+    const res = { value: value, exceeded: false };
+    if (expr.hash) evalMemo.set(expr.hash + '|' + limitBig.toString(), res);
+    return res;
+  }
+
+  // Stack-safe exprToString that **does not** compress f0 runs.
+  // It will explicitly expand each f0 as f0(inner).
+  function exprToString(expr) {
+    // Flatten frames until base
+    const frames = [];
+    let cur = expr;
+    while (cur.type !== "base") {
+      if (cur.type === "f") {
+        frames.push({ type: "f", k: cur.k });
+        cur = cur.inner;
+      } else {
+        throw new Error("Unknown expr node type in exprToString");
+      }
+    }
+    // cur is base
+    let s = cur.v.toString();
+
+    // Rebuild outward
+    for (let i = frames.length - 1; i >= 0; i--) {
+      const fr = frames[i];
+      if (fr.k === 0) {
+        // explicit f0(inner) — do NOT compress into f0^count
+        s = `f0(${s})`;
+      } else {
+        s = `f${fr.k}(${s})`;
+      }
+      // truncate if enormous
+      if (s.length > MAX_EXPR_STRING) {
+        s = s.slice(0, MAX_EXPR_STRING) + "...(truncated)";
+        break;
+      }
+    }
+    return s;
+  }
+
+  // helper to build hashes on node creation
+  function baseNode(v) {
+    return { type: "base", v: BigInt(v), hash: `B${v.toString()}` };
+  }
+  function fNode(k, inner) {
+    return { type: "f", k: Number(k), inner, hash: `F${k},${inner.hash}` };
+  }
+
+  // ---------- Main canonical builder (greedy) ----------
+  let expr = baseNode(base);
+
+  // fast path: base equals n
+  if (base === n) return base.toString();
+
+  while (true) {
+    // evaluate current expression
+    const ev = evalExprLimited(expr, n);
+    if (!ev.exceeded && ev.value === n) {
+      return exprToString(expr);
+    }
+    if (ev.exceeded) {
+      // shouldn't normally happen: current expression already exceeds n
+      throw new Error("evaluation exceeded limit unexpectedly for current expression");
+    }
+
+    const currentVal = ev.value; // numeric value < n
+
+    // find largest k (0..MAX_K) such that f_k(currentVal) <= n
+    let chosenK = -1;
+    for (let k = 0; k <= MAX_K; k++) {
+      const r = compute_fk_lte_limit(k, currentVal, n);
+      if (!r.exceeded) chosenK = k;
+      else break; // larger k will only be bigger; stop early
+    }
+
+    if (chosenK === -1) {
+      throw new Error("Cannot find any f_k that keeps value <= n (unexpected).");
+    }
+
+    if (chosenK === 0) {
+      // final stretch: use explicit repeated f0 to reach n
+      const diff = n - currentVal;
+      if (diff < 0n) throw new Error("negative difference (bug)");
+
+      // Safety: avoid attempting to do an astronomically-large number of explicit f0 wrappings.
+      if (diff > BigInt(MAX_F0_EXPAND)) {
+        throw new Error(
+          `Difference ${diff.toString()} is too large to expand as explicit f0(...) wrappers without compression. ` +
+          `Set options.maxF0Expand to a larger value if you understand the memory/time implications.`
+        );
+      }
+
+      // attach diff times f0(...) wrappers explicitly
+      const times = Number(diff); // safe because of the guard above
+      for (let i = 0; i < times; i++) {
+        expr = fNode(0, expr);
+      }
+
+      // final check
+      const finalEval = evalExprLimited(expr, n);
+      if (!finalEval.exceeded && finalEval.value === n) return exprToString(expr);
+      throw new Error("failed to reach n after applying explicit f0 wrappers");
+    }
+
+    // wrap once with chosenK >= 1
+    expr = fNode(chosenK, expr);
+
+    // guard on output size
+    const s = exprToString(expr);
+    if (s.length > MAX_EXPR_STRING) {
+      return s.slice(0, MAX_EXPR_STRING) + "...(truncated)";
+    }
+
+    // loop
+  }
+}
+
+
+// ----------------- Example tests -----------------
+let i = 2;              // start as Number
+const threshold = 2 ** 53 - 1;    // max safe integer for double
+const factor = 1.001;
+
+setInterval(() => {
+  // If still safe: use Number
+  if (typeof i === "number") {
+    i *= factor;
+
+    // When exceeding safe integer → convert to BigInt
+    if (i > threshold) {
+      i = BigInt(Math.floor(i));
+    }
+  } 
+  else {
+    // Already BigInt: multiply using scaled integer math
+    // factor = 1.25 = 5/4
+    i = (i * 100n) / 99n;
+  }
+
+  const displayValue =
+    typeof i === "number" ? i : i.toString();
+
+  document.getElementById("i").innerHTML = "i = " + Math.floor(displayValue);
+
+  // Always call your function with BigInt-rounded value
+  const bigintForFunction =
+    typeof i === "number"
+      ? BigInt(Math.floor(i))
+      : i;
+
+  document.getElementById("output").innerHTML =
+    numberToCanonicalFGH(bigintForFunction, 2n);
+
+}, 10);
+
+    </script>
+</head>
+<body>
+    <h1>FGH Lngi v1</h1>
+    <h4 id = "i">i = 0</h4>
+    <p id="output" style="white-space: normal; word-wrap: break-word;">
+        f0(0)
+    </p>
+
+</body>
+</html>
