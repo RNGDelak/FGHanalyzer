@@ -2,6 +2,20 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fast Growing Hierachy Lngi v2</title>
+
+    <style>
+        body {
+            background-color: white;
+        }
+        #output {
+            font-size: 1.5rem; /* Increase if you want bigger text */
+            white-space: normal;
+            word-wrap: break-word;
+        }
+    </style>
+
     <script>
 // Final boss-level numberToCanonicalFGH -> HTML-only output (Option A)
 function numberToCanonicalFGH(nInput, baseInput, options = {}) {
@@ -157,9 +171,9 @@ function numberToCanonicalFGH(nInput, baseInput, options = {}) {
   // formatF: produces HTML string for F_k (with optional superscript run)
   function formatF(k, run, inner) {
     if (run > 1) {
-      return `F<sub>${k}</sub><sup>${run}</sup>(${inner})`;
+      return `f<sub>${k}</sub><sup>${run}</sup>(${inner})`;
     }
-    return `F<sub>${k}</sub>(${inner})`;
+    return `f<sub>${k}</sub>(${inner})`;
   }
 
   // Build string from expr WITHOUT converting numbers to FGH — numbers remain as digits.
@@ -180,7 +194,7 @@ function numberToCanonicalFGH(nInput, baseInput, options = {}) {
       while (j >= 0 && frames[j] === k) { run++; j--; }
 
       // If run > base collapse into F_k^run(...), else produce repeated F_k(...) explicitly
-      if (run > Number(base)) {
+      if (run > Number(base)*3) {
         s = formatF(k, run, s);
       } else {
         for (let t = 0; t < run; t++) s = formatF(k, 1, s);
@@ -212,7 +226,7 @@ function numberToCanonicalFGH(nInput, baseInput, options = {}) {
       parts[p] = piece.replace(/\b\d+\b/g, (m) => {
         const x = BigInt(m);
         if (x === b) return m;   // keep base literal unchanged
-        if (x < b) return m;     // keep smaller numbers unchanged
+        if (x < b * 300n) return m;     // keep smaller numbers unchanged
         // For numbers > base: recursively obtain canonical HTML string.
         // This is safe because the recursive call will produce HTML with tags;
         // it will be inserted into the current output as a chunk.
@@ -266,11 +280,11 @@ setInterval(() => {
     </script>
 </head>
 <body>
-    <h1>FGH Lngi v1</h1>
-    <h4 id = "i">i = 0</h4>
-    <p id="output" style="white-space: normal; word-wrap: break-word;">
+    <h1>Fast Growing Hierachy Lngi v2</h1>
+    <h3 id="i">i = 0</h3>
+
+    <p id="output">
         f0(0)
     </p>
-
 </body>
 </html>
