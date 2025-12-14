@@ -1,348 +1,420 @@
-<!DOCTYPE html>
-<html lang="en">
+<!doctype html>
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fast Growing Hierachy Lngi</title>
+<meta charset="utf-8" />
+<title>FGH analyzer</title>
+<style>
+  body {
+    background:#ffffff;
+    color:#000000;
+    font-family:sans-serif;
+    margin:20px;
+  }
+  input {
+    font-size:18px;
+    padding:6px;
+    width:220px;
+  }
+  button {
+    font-size:18px;
+    padding:6px 12px;
+    margin-left:4px;
+    user-select:none;
+  }
+  #output {
+    margin-top:20px;
+    white-space:pre-wrap;
+    font-family:monospace;
+    border:1px solid #ddd;
+    padding:10px;
+    min-height:40px;
+  }
+</style>
+</head>
+<body>
 
-    <style>
-        body {
-            background-color: black;
-            color: #00ffff;
-        }
+<h2>Fast Growing Hierarchy Analyzer</h2>
 
-        #output {
-            font-size: 1.5rem;
-            white-space: normal;
-            word-wrap: break-word;
-            position: relative;
+<div>
+  <label>Number: </label>
+  <input id="num" type="text" value="0">
 
-            /* NEON GLOW */
-            text-shadow:
-                0 0 4px #00ffff,
-                0 0 10px #00ffff,
-                0 0 20px #00aaff;
-        }
+  <!-- increment buttons -->
+  <button class="hold" data-type="num" data-delta="-1">–1</button>
+  <button class="hold" data-type="num" data-delta="1">+1</button>
 
-        .afterimage {
-            position: absolute;
-            left: 0;
-            top: 0;
-            pointer-events: none;
-            opacity: 0.6;
-            filter: blur(2px);
-            color: #00ffff;
-            text-shadow:
-                0 0 8px #00ffff,
-                0 0 16px #00aaff;
-        }
-    </style>
-    <script>
+  <!-- multiply/divide buttons -->
+  <button class="hold" data-type="numX" data-op="mul">×2</button>
+  <button class="hold" data-type="numX" data-op="div">÷2</button>
+</div>
 
-    // Final boss-level numberToCanonicalFGH -> HTML-only output (Option A)
-    function numberToCanonicalFGH(nInput, baseInput, options = {}) {
-      const n = BigInt(nInput);
-      const base = BigInt(baseInput);
-      if (n < base) throw new Error("n must be >= base");
+<br>
 
-      const MAX_K = options.maxK ?? 4;               // limit search depth for k
-      const MAX_EXPR_STRING = options.maxExprString ?? 1e308; // truncate safety
-      const MAX_F0_EXPAND = options.maxF0Expand ?? 1e308 // cap explicit f0 expansions
+<div>
+  <label>Base: </label>
+  <input id="base" type="number" value="2">
+  <button class="hold" data-type="base" data-delta="-1">–1</button>
+  <button class="hold" data-type="base" data-delta="1">+1</button>
+</div>
+<br>
+  <div>
+    <label>Maximum index search : </label>
+    <input id="kmax" type="number" value="4">
+    <button class="hold" data-type="kmax" data-delta="-1">–1</button>
+    <button class="hold" data-type="kmax" data-delta="1">+1</button>
+  </div>
 
-      // Memoization for f_k(x) results: key = `${k},${x}`
-      const fkMemo = new Map();
+<div id="output">(result will appear here)</div>
 
-      // compute f_k(x) but stop early if > limit.
-      function compute_fk_lte_limit(k, x, limit) {
-        k = Number(k);
-        x = BigInt(x);
-        limit = BigInt(limit);
-        const key = `${k},${x}`;
-        if (fkMemo.has(key)) return fkMemo.get(key);
+<script>
 
-        function store(res) { fkMemo.set(key, res); return res; }
+  // Final boss-level numberToCanonicalFGH -> HTML-only output (Option A)
+  function numberToCanonicalFGH(nInput, baseInput, options = {}) {
+    const n = BigInt(nInput);
+    const base = BigInt(baseInput);
+    if (n < base) throw new Error("n must be >= base");
 
-        // f0: x + 1
-        if (k === 0) {
-          const v = x + 1n;
-          return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
-        }
+    const MAX_K = options.maxK ?? 4;               // limit search depth for k
+    const MAX_EXPR_STRING = options.maxExprString ?? 1e308; // truncate safety
+    const MAX_F0_EXPAND = options.maxF0Expand ?? 1e308 // cap explicit f0 expansions
 
-        // f1: 2x
-        if (k === 1) {
-          const v = x << 1n;
-          return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
-        }
+    // Memoization for f_k(x) results: key = `${k},${x}`
+    const fkMemo = new Map();
 
-        // f2: x * 2^x
-        if (k === 2) {
-          if (x > 4096n) return store({ exceeded: true });
-          const v = x * (1n << x);
-          return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
-        }
+    // compute f_k(x) but stop early if > limit.
+    function compute_fk_lte_limit(k, x, limit) {
+      k = Number(k);
+      x = BigInt(x);
+      limit = BigInt(limit);
+      const key = `${k},${x}`;
+      if (fkMemo.has(key)) return fkMemo.get(key);
 
-        // k >= 3: hyper-exponential; guard if x too big
-        if (x > 32n) return store({ exceeded: true });
+      function store(res) { fkMemo.set(key, res); return res; }
 
-        // iterate applying f_{k-1} x times
-        let v = x;
-        for (let i = 0; i < Number(x); i++) {
-          const lower = compute_fk_lte_limit(k - 1, v, limit);
-          if (lower.exceeded) return store({ exceeded: true });
-          v = lower.value;
-          if (v > limit) return store({ exceeded: true });
-        }
-        return store({ value: v, exceeded: false });
+      // f0: x + 1
+      if (k === 0) {
+        const v = x + 1n;
+        return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
       }
 
-      // ---------- Expression representation ----------
-      function baseNode(v) { return { type: "base", v: BigInt(v), hash: `B${v.toString()}` }; }
-      function fNode(k, inner) { return { type: "f", k: Number(k), inner, hash: `F${k},${inner.hash}` }; }
-
-      // Evaluate symbolic expression to a numeric value <= limit
-      const evalMemo = new Map();
-      function evalExprLimited(expr, limit) {
-        const limitBig = BigInt(limit);
-        const memoKey = expr.hash + '|' + limitBig.toString();
-        if (evalMemo.has(memoKey)) return evalMemo.get(memoKey);
-
-        // flatten frames
-        const frames = [];
-        let cur = expr;
-        while (cur.type !== "base") {
-          if (cur.type === "f") {
-            frames.push({ k: cur.k });
-            cur = cur.inner;
-          } else {
-            throw new Error("Unknown expr node type: " + JSON.stringify(cur));
-          }
-        }
-
-        let value = cur.v;
-        for (let i = frames.length - 1; i >= 0; i--) {
-          const r = compute_fk_lte_limit(frames[i].k, value, limitBig);
-          if (r.exceeded) {
-            const res = { exceeded: true };
-            evalMemo.set(memoKey, res);
-            return res;
-          }
-          value = r.value;
-        }
-        const res = { value: value, exceeded: false };
-        evalMemo.set(memoKey, res);
-        return res;
+      // f1: 2x
+      if (k === 1) {
+        const v = x << 1n;
+        return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
       }
 
-      // ---------- Core canonical builder (greedy) ----------
-      let expr = baseNode(base);
-      if (base === n) return base.toString();
-
-      while (true) {
-        const ev = evalExprLimited(expr, n);
-        if (!ev.exceeded && ev.value === n) break;
-        if (ev.exceeded) throw new Error("evaluation exceeded unexpectedly for current expression");
-
-        const currentVal = ev.value; // numeric value < n
-
-        // find largest k (0..MAX_K) such that f_k(currentVal) <= n
-        let chosenK = -1;
-        for (let k = 0; k <= MAX_K; k++) {
-          const r = compute_fk_lte_limit(k, currentVal, n);
-          if (!r.exceeded) chosenK = k;
-          else break;
-        }
-        if (chosenK === -1) throw new Error("Cannot find any f_k that keeps value <= n (unexpected).");
-
-        if (chosenK === 0) {
-          const diff = n - currentVal;
-          if (diff < 0n) throw new Error("negative difference (bug)");
-          if (diff > BigInt(MAX_F0_EXPAND)) {
-            throw new Error(
-              `Difference ${diff.toString()} is too large to expand as explicit F<sub>0</sub>(...) wrappers without compression. ` +
-              `Increase maxF0Expand if you understand the implications.`
-            );
-          }
-          const times = Number(diff);
-          for (let i = 0; i < times; i++) expr = fNode(0, expr);
-
-          const finalEval = evalExprLimited(expr, n);
-          if (!finalEval.exceeded && finalEval.value === n) break;
-          throw new Error("failed to reach n after applying explicit F<sub>0</sub> wrappers");
-        }
-
-        // wrap once with chosenK >= 1
-        expr = fNode(chosenK, expr);
-
-        // guard: if string would be enormous, abort with truncated text
-        const sTest = exprToStringWithoutConversion(expr);
-        if (sTest.length > MAX_EXPR_STRING) {
-          return sTest.slice(0, MAX_EXPR_STRING) + "...(truncated)";
-        }
+      // f2: x * 2^x
+      if (k === 2) {
+        if (x > 4096n) return store({ exceeded: true });
+        const v = x * (1n << x);
+        return store(v > limit ? { exceeded: true } : { value: v, exceeded: false });
       }
 
-      // Now we have expr that evaluates to n. Build raw HTML-ish string (numbers not rewritten yet).
-      const raw = exprToStringWithoutConversion(expr);
+      // k >= 3: hyper-exponential; guard if x too big
+      if (x > 32n) return store({ exceeded: true });
 
-      // Post-process: rewrite numeric literals > base (except base itself) into canonical FGH recursively.
-      return rewriteNumbersOutsideTags(raw, base);
-
-      // -------------------------
-      // String builders & helpers
-      // -------------------------
-
-      // formatF: produces HTML string for F_k (with optional superscript run)
-      function formatF(k, run, inner) {
-        if (run > 1) {
-          return `f<sub>${k}</sub><sup>${run}</sup>(${inner})`;
-        }
-        return `f<sub>${k}</sub>(${inner})`;
+      // iterate applying f_{k-1} x times
+      let v = x;
+      for (let i = 0; i < Number(x); i++) {
+        const lower = compute_fk_lte_limit(k - 1, v, limit);
+        if (lower.exceeded) return store({ exceeded: true });
+        v = lower.value;
+        if (v > limit) return store({ exceeded: true });
       }
+      return store({ value: v, exceeded: false });
+    }
 
-      // Build string from expr WITHOUT converting numbers to FGH — numbers remain as digits.
-      function exprToStringWithoutConversion(expr) {
-        const frames = [];
-        let cur = expr;
-        while (cur.type !== "base") {
-          frames.push(cur.k);
+    // ---------- Expression representation ----------
+    function baseNode(v) { return { type: "base", v: BigInt(v), hash: `B${v.toString()}` }; }
+    function fNode(k, inner) { return { type: "f", k: Number(k), inner, hash: `F${k},${inner.hash}` }; }
+
+    // Evaluate symbolic expression to a numeric value <= limit
+    const evalMemo = new Map();
+    function evalExprLimited(expr, limit) {
+      const limitBig = BigInt(limit);
+      const memoKey = expr.hash + '|' + limitBig.toString();
+      if (evalMemo.has(memoKey)) return evalMemo.get(memoKey);
+
+      // flatten frames
+      const frames = [];
+      let cur = expr;
+      while (cur.type !== "base") {
+        if (cur.type === "f") {
+          frames.push({ k: cur.k });
           cur = cur.inner;
+        } else {
+          throw new Error("Unknown expr node type: " + JSON.stringify(cur));
         }
-
-        let s = cur.v.toString();
-
-        for (let i = frames.length - 1; i >= 0; ) {
-          const k = frames[i];
-          let run = 1;
-          let j = i - 1;
-          while (j >= 0 && frames[j] === k) { run++; j--; }
-
-          // If run > base collapse into F_k^run(...), else produce repeated F_k(...) explicitly
-          if (run > Number(base)) {
-            s = formatF(k, run, s);
-          } else {
-            for (let t = 0; t < run; t++) s = formatF(k, 1, s);
-          }
-          i = j;
-
-          if (s.length > MAX_EXPR_STRING) return s.slice(0, MAX_EXPR_STRING) + "...(truncated)";
-        }
-        return s;
       }
 
-      // Rewrite numbers only outside of HTML tags.
-      // We split the string by tags and only replace numbers in non-tag parts.
-      function rewriteNumbersOutsideTags(str, baseVal) {
-        const b = BigInt(baseVal);
-
-        // Split keeping tags: any "<...>" is a separate token.
-        // This preserves tags like <sub>2</sub> so we don't rewrite the 2 inside them.
-        const parts = str.split(/(<[^>]+>)/g);
-
-        for (let p = 0; p < parts.length; p++) {
-          const piece = parts[p];
-          if (!piece || piece[0] === "<") {
-            // it's a tag — do not modify
-            continue;
-          }
-
-          // replace numbers in this plain-text piece
-          parts[p] = piece.replace(/\b\d+\b/g, (m) => {
-            const x = BigInt(m);
-            if (x === b) return m;   // keep base literal unchanged
-            if (x < b * 1n) return m;     // keep smaller numbers unchanged
-            // For numbers > base: recursively obtain canonical HTML string.
-            // This is safe because the recursive call will produce HTML with tags;
-            // it will be inserted into the current output as a chunk.
-            return numberToCanonicalFGH(x, b, options);
-          });
+      let value = cur.v;
+      for (let i = frames.length - 1; i >= 0; i--) {
+        const r = compute_fk_lte_limit(frames[i].k, value, limitBig);
+        if (r.exceeded) {
+          const res = { exceeded: true };
+          evalMemo.set(memoKey, res);
+          return res;
         }
+        value = r.value;
+      }
+      const res = { value: value, exceeded: false };
+      evalMemo.set(memoKey, res);
+      return res;
+    }
 
-        return parts.join("");
+    // ---------- Core canonical builder (greedy) ----------
+    let expr = baseNode(base);
+    if (base === n) return base.toString();
+
+    while (true) {
+      const ev = evalExprLimited(expr, n);
+      if (!ev.exceeded && ev.value === n) break;
+      if (ev.exceeded) throw new Error("evaluation exceeded unexpectedly for current expression");
+
+      const currentVal = ev.value; // numeric value < n
+
+      // find largest k (0..MAX_K) such that f_k(currentVal) <= n
+      let chosenK = -1;
+      for (let k = 0; k <= MAX_K; k++) {
+        const r = compute_fk_lte_limit(k, currentVal, n);
+        if (!r.exceeded) chosenK = k;
+        else break;
+      }
+      if (chosenK === -1) throw new Error("Cannot find any f_k that keeps value <= n (unexpected).");
+
+      if (chosenK === 0) {
+        const diff = n - currentVal;
+        if (diff < 0n) throw new Error("negative difference (bug)");
+        if (diff > BigInt(MAX_F0_EXPAND)) {
+          throw new Error(
+            `Difference ${diff.toString()} is too large to expand as explicit F<sub>0</sub>(...) wrappers without compression. ` +
+            `Increase maxF0Expand if you understand the implications.`
+          );
+        }
+        const times = Number(diff);
+        for (let i = 0; i < times; i++) expr = fNode(0, expr);
+
+        const finalEval = evalExprLimited(expr, n);
+        if (!finalEval.exceeded && finalEval.value === n) break;
+        throw new Error("failed to reach n after applying explicit F<sub>0</sub> wrappers");
+      }
+
+      // wrap once with chosenK >= 1
+      expr = fNode(chosenK, expr);
+
+      // guard: if string would be enormous, abort with truncated text
+      const sTest = exprToStringWithoutConversion(expr);
+      if (sTest.length > MAX_EXPR_STRING) {
+        return sTest.slice(0, MAX_EXPR_STRING) + "...(truncated)";
       }
     }
 
+    // Now we have expr that evaluates to n. Build raw HTML-ish string (numbers not rewritten yet).
+    const raw = exprToStringWithoutConversion(expr);
 
+    // Post-process: rewrite numeric literals > base (except base itself) into canonical FGH recursively.
+    return rewriteNumbersOutsideTags(raw, base);
 
+    // -------------------------
+    // String builders & helpers
+    // -------------------------
 
+    // formatF: produces HTML string for F_k (with optional superscript run)
+    function formatF(k, run, inner) {
+      if (run > 1) {
+        return `f<sub>${k}</sub><sup>${run}</sup>(${inner})`;
+      }
+      return `f<sub>${k}</sub>(${inner})`;
+    }
 
-    // ----------------- Example tests -----------------
-    document.addEventListener("DOMContentLoaded", () => {
-        const slider = document.getElementById("incrementSlider");
-        const valueLabel = document.getElementById("incrementValue");
+    // Build string from expr WITHOUT converting numbers to FGH — numbers remain as digits.
+    function exprToStringWithoutConversion(expr) {
+      const frames = [];
+      let cur = expr;
+      while (cur.type !== "base") {
+        frames.push(cur.k);
+        cur = cur.inner;
+      }
 
-        function sliderToValue(v) {
-            return Math.pow(10, v);
+      let s = cur.v.toString();
+
+      for (let i = frames.length - 1; i >= 0; ) {
+        const k = frames[i];
+        let run = 1;
+        let j = i - 1;
+        while (j >= 0 && frames[j] === k) { run++; j--; }
+
+        // If run > base collapse into F_k^run(...), else produce repeated F_k(...) explicitly
+        if (run > Number(base)) {
+          s = formatF(k, run, s);
+        } else {
+          for (let t = 0; t < run; t++) s = formatF(k, 1, s);
+        }
+        i = j;
+
+        if (s.length > MAX_EXPR_STRING) return s.slice(0, MAX_EXPR_STRING) + "...(truncated)";
+      }
+      return s;
+    }
+
+    // Rewrite numbers only outside of HTML tags.
+    // We split the string by tags and only replace numbers in non-tag parts.
+    function rewriteNumbersOutsideTags(str, baseVal) {
+      const b = BigInt(baseVal);
+
+      // Split keeping tags: any "<...>" is a separate token.
+      // This preserves tags like <sub>2</sub> so we don't rewrite the 2 inside them.
+      const parts = str.split(/(<[^>]+>)/g);
+
+      for (let p = 0; p < parts.length; p++) {
+        const piece = parts[p];
+        if (!piece || piece[0] === "<") {
+          // it's a tag — do not modify
+          continue;
         }
 
-        function updateIncrement() {
-            const increment = sliderToValue(parseFloat(slider.value));
-            valueLabel.textContent = increment.toPrecision(3);
-            window.increment = increment;
+        // replace numbers in this plain-text piece
+        parts[p] = piece.replace(/\b\d+\b/g, (m) => {
+          const x = BigInt(m);
+          if (x === b) return m;   // keep base literal unchanged
+          if (x < b * 1n) return m;     // keep smaller numbers unchanged
+          // For numbers > base: recursively obtain canonical HTML string.
+          // This is safe because the recursive call will produce HTML with tags;
+          // it will be inserted into the current output as a chunk.
+          return numberToCanonicalFGH(x, b, options);
+        });
+      }
+
+      return parts.join("");
+    }
+  }
+
+
+
+  const numInput  = document.getElementById("num");
+  const baseInput = document.getElementById("base");
+  const maxsearch = document.getElementById("kmax")
+  const output    = document.getElementById("output");
+
+  /* ===========================
+     Update Output
+     =========================== */
+  function update() {
+      if (typeof numberToCanonicalFGH !== "function") {
+          output.textContent = "Error: numberToCanonicalFGH() not found";
+          return;
+      }
+
+      let nText = numInput.value.trim();
+      if (!/^[-+]?\d+$/.test(nText)) {
+          output.textContent = "Invalid number.";
+          return;
+      }
+
+      let n = BigInt(nText);
+      let b = Number(baseInput.value);
+      let k = Number(maxsearch.value);
+
+      try {
+          let result = numberToCanonicalFGH(n, b, {maxK: k});
+          output.innerHTML = String(result);  // allow sub/sup tags
+      } catch (e) {
+          output.textContent = "Error: " + e;
+      }
+  }
+
+  /* ===========================
+     Number & Base Change
+     =========================== */
+  function changeNumber(delta) {
+      let n = BigInt(numInput.value);
+      numInput.value = (n + BigInt(delta)).toString();
+      update();
+  }
+
+  function multiplyNumber() {
+      let n = BigInt(numInput.value);
+      numInput.value = (n * 2n).toString();
+      update();
+  }
+
+  function divideNumber() {
+      let n = BigInt(numInput.value);
+      numInput.value = (n / 2n).toString(); // BigInt division (floor)
+      update();
+  }
+
+  function changeBase(delta) {
+      let b = Number(baseInput.value);
+      baseInput.value = b + delta;
+      if (baseInput.value < 2) baseInput.value = 2;
+      update();
+  }
+
+  function changek(delta) {
+      let k = Number(maxsearch.value);
+      maxsearch.value = k + delta;
+      update();
+  }
+
+  /* ===========================
+     HOLD BUTTONS (auto-repeat)
+     =========================== */
+  let holdTimer = null;
+
+  function startHold(btn) {
+      const type = btn.dataset.type;
+      const delta = Number(btn.dataset.delta);
+      const op = btn.dataset.op;
+
+      function step() {
+          if (type === "num") {
+              changeNumber(delta);
+          } else if (type === "numX") {
+              if (op === "mul") multiplyNumber();
+              if (op === "div") divideNumber();
+          } else if (type === "base") {
+              changeBase(delta);
+          }  else if (type === "kmax") {
+            changek(delta);
         }
 
-        slider.addEventListener("input", updateIncrement);
-        updateIncrement(); // default = 1
-    });
+          holdTimer = setTimeout(step, 120);
+      }
 
+      step();
+  }
 
+  function stopHold() {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+  }
 
+  document.querySelectorAll(".hold").forEach(btn => {
+      btn.addEventListener("mousedown", () => startHold(btn));
+      btn.addEventListener("mouseup", stopHold);
+      btn.addEventListener("mouseleave", stopHold);
 
-    document.addEventListener("DOMContentLoaded", () => {
+      // Touch support
+      btn.addEventListener("touchstart", (e) => {
+          e.preventDefault();
+          startHold(btn);
+      });
+      btn.addEventListener("touchend", stopHold);
+  });
 
-        let i = 2;
-        let lastInt = Math.floor(i);
+  /* ===========================
+     Auto-update
+     =========================== */
+  numInput.addEventListener("input", update);
+  baseInput.addEventListener("input", update);
+  maxsearch.addEventListener("input", update);
 
-        const output = document.getElementById("output");
-
-        function setOutputText(text) {
-            output.innerHTML = text;
-        }
-
-        setInterval(() => {
-            document.getElementById("i").innerHTML =
-                "i = " + Math.round(i * 1000) / 1000;
-
-            const currentInt = Math.floor(i);
-
-            if (currentInt > lastInt) {
-                // Heavy function runs ONLY when i increases by 1
-                setOutputText(
-                    numberToCanonicalFGH(BigInt(currentInt), 2n)
-                );
-                lastInt = currentInt;
-            }
-
-            i += window.increment;
-
-        }, 0);
-    });
-
-
-    
+  update();
 
         
-    </script>
-</head>
-<body>
-    <h1>Fast Growing Hierachy Lngi</h1>
-    <label>
-        Increment:
-        <span id="incrementValue">1</span>
-    </label>
-<br>
-    <input
-        type="range"
-        id="incrementSlider"
-        style="width: 50%;"
-        min="-4"
-        max="1.176091"
-        step="0.01"
-        value="-4"
-    >
-    
-    <h3 id="i">i = 0</h3>
+</script>
 
-    <p id="output" style="font-size: 1.5rem;">
-        f0(0)
-    </p>
+
 </body>
 </html>
